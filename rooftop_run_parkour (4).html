@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="ko">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>ROOFTOP RUN — Open World Parkour</title>
+    <style>
+        html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #9bc5d8; font-family: system-ui, sans-serif }
+        #hud { position: fixed; inset: 0; pointer-events: none; color: white; text-shadow: 0 2px 5px #14212a }
+        #brand { position: absolute; top: 22px; left: 26px; font-weight: 900; letter-spacing: .18em; font-size: 14px }
+        #stats { position: absolute; top: 22px; right: 26px; text-align: right; font-size: 12px; line-height: 1.7 }
+        #center { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); font-size: 25px; font-weight: 300 }
+        #hint { position: absolute; bottom: 25px; left: 50%; transform: translateX(-50%); font-size: 13px; text-align: center; line-height: 1.8; background: #101d2a66; padding: 10px 18px; border: 1px solid #ffffff35; border-radius: 4px; white-space: nowrap }
+        #mm { position: absolute; left: 26px; bottom: 25px; width: 168px; height: 168px; border: 1px solid #ffffff40; border-radius: 4px }
+        #start { position: fixed; inset: 0; background: linear-gradient(120deg, #132b3deF, #263c4acc); display: grid; place-items: center; color: white; text-align: center; cursor: pointer }
+        #panel { max-width: 600px; padding: 32px }
+        #panel h1 { font-size: clamp(34px, 7vw, 64px); letter-spacing: .12em; margin: 0 0 8px }
+        #panel p { line-height: 1.8; color: #d3e2e8 }
+        #panel button { margin-top: 18px; border: 0; background: #f15b42; color: white; padding: 15px 28px; font-weight: 800; letter-spacing: .12em; cursor: pointer }
+        #help { font-size: 12px; color: #afc4ce }
+    </style>
+</head>
+
+<body>
+    <div id="hud">
+        <div id="brand">ROOFTOP RUN <span style="color:#ff755c">/ OPEN WORLD</span></div>
+        <div id="stats">SPEED <b id="speed">0.0</b><br>MODE <b id="mode">WALK</b><br>ALT <b id="alt">0</b> m<br>DISTANCE <b id="dist">0</b> m</div>
+        <div id="center">+</div>
+        <canvas id="mm" width="168" height="168"></canvas>
+        <div id="hint">W A S D 이동　·　SHIFT 달리기　·　C 앉기 / SHIFT+C 슬라이딩　·　SPACE 점프 / 벽·턱 앞 Vault　·　R 리스폰</div>
+    </div>
+    <div id="start">
+        <div id="panel">
+            <h1>ROOFTOP RUN</h1>
+            <div style="letter-spacing:.3em;color:#ff927b">CITY IS YOUR PLAYGROUND</div>
+            <p>끝없이 이어진 서양식 도심 옥상을 달리는 1인칭 파쿠르.<br>건물 사이를 뛰어넘고, 계단과 다리를 건너 도시 전체를 누벼보세요.</p>
+            <div id="help">마우스 시점 조작 (포인터 잠금이 막히면 드래그로 시점 이동)</div><button>클릭해서 시작</button>
+        </div>
+    </div>
+    <script type="module">
+        import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+
+        const scene = new THREE.Scene(); scene.background = new THREE.Color(0x9bc5d8); scene.fog = new THREE.Fog(0x9bc5d8, 90, 430);
+        const camera = new THREE.PerspectiveCamera(76, innerWidth / innerHeight, .1, 900);
+        const renderer = new THREE.WebGLRenderer({ antialias: true }); renderer.setSize(innerWidth, innerHeight); renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap; renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.15; document.body.appendChild(renderer.domElement);
+        scene.add(new THREE.HemisphereLight(0xe5f5ff, 0x59616c, 2.0));
+        const sun = new THREE.DirectionalLight(0xffe1bf, 3.1); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -.0004;
+        Object.assign(sun.shadow.camera, { left: -80, right: 80, top: 80, bottom: -80, near: 1, far: 280 }); sun.shadow.camera.updateProjectionMatrix(); scene.add(sun, sun.target);
+        const SUN_OFF = new THREE.Vector3(-35, 55, 25);
+
+        const mat = (c, r = .8, m = 0) => new THREE.MeshStandardMaterial({ color: c, roughness: r, metalness: m });
+        const roofM = mat(0x454d55), cream = mat(0xc9bba4), dark = mat(0x29343c, .5), metal = mat(0x8b989e, .35, .65), red = mat(0xc74f3c), brick = mat(0x9b7969), wood = mat(0x8a6a48),
+            glass = new THREE.MeshStandardMaterial({ color: 0x5c8291, roughness: .18, metalness: .55 }),
+            sign = new THREE.MeshStandardMaterial({ color: 0xf2d16b, emissive: 0x6b4a10, roughness: .6 }),
+            lamp = new THREE.MeshStandardMaterial({ color: 0xff3b30, emissive: 0xff1a10, emissiveIntensity: 2 });
+        let seed = 20241120; const rnd = () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296 };
+        const pick = a => a[Math.floor(rnd() * a.length)];
+
+        // 충돌체: 모든 오브젝트를 같은 형식의 AABB {x,z,hx,hz,top,bot} 로 저장 (원본은 y 값이 빠져 NaN 이 되어 이동이 막혔음)
+        const solids = [];
+        function box(x, y, z, sx, sy, sz, material, collide = true, shadow = true) {
+            const o = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), material); o.position.set(x, y, z); o.castShadow = shadow; o.receiveShadow = true; scene.add(o);
+            if (collide) solids.push({ x, z, hx: sx / 2, hz: sz / 2, top: y + sy / 2, bot: y - sy / 2 });
+            return o;
+        }
+
+        // ---- 건물 외벽 텍스처 (창문 반복 패턴) ----
+        function facadeTex(wall) {
+            const c = document.createElement('canvas'); c.width = c.height = 128; const g = c.getContext('2d');
+            g.fillStyle = wall; g.fillRect(0, 0, 128, 128); g.fillStyle = 'rgba(0,0,0,.12)'; g.fillRect(0, 118, 128, 10);
+            g.fillStyle = '#d8cdb8'; g.fillRect(22, 100, 84, 6);
+            const gr = g.createLinearGradient(0, 28, 0, 100); gr.addColorStop(0, '#7fa5b5'); gr.addColorStop(1, '#3d5a68'); g.fillStyle = gr; g.fillRect(28, 28, 72, 72);
+            g.strokeStyle = '#d8cdb8'; g.lineWidth = 4; g.strokeRect(28, 28, 72, 72); g.beginPath(); g.moveTo(64, 28); g.lineTo(64, 100); g.stroke();
+            const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
+        }
+        const facades = [facadeTex('#9b7969'), facadeTex('#c9bba4'), facadeTex('#8a9097')];
+        function faceMat(k, wd, H) { const t = facades[k].clone(); t.needsUpdate = true; t.repeat.set(Math.max(1, Math.round(wd / 3.2)), Math.max(1, Math.round(H / 3.2))); return new THREE.MeshStandardMaterial({ map: t, roughness: .85 }) }
+
+        const GROUND = -60;
+        function building(x, z, w, d, top, kind, parapet = true) {
+            const H = top - GROUND, mx = faceMat(kind, d, H), mz = faceMat(kind, w, H);
+            const m = new THREE.Mesh(new THREE.BoxGeometry(w, H, d), [mx, mx, roofM, roofM, mz, mz]); m.position.set(x, top - H / 2, z); m.castShadow = m.receiveShadow = true; scene.add(m);
+            solids.push({ x, z, hx: w / 2, hz: d / 2, top, bot: GROUND, roof: true });
+            if (parapet) { // 옥상 난간(장식용)
+                box(x, top + .25, z - d / 2 + .09, w, .5, .18, cream, false, false); box(x, top + .25, z + d / 2 - .09, w, .5, .18, cream, false, false);
+                box(x - w / 2 + .09, top + .25, z, .18, .5, d, cream, false, false); box(x + w / 2 - .09, top + .25, z, .18, .5, d, cream, false, false);
+            }
+        }
+
+        // ---- 옥상 오브젝트 ----
+        function hvac(x, y, z, s) {
+            box(x, y + .7, z, 3 * s, 1.4, 2 * s, metal); box(x, y + 1.45, z, 3.2 * s, .12, 2.2 * s, dark, false);
+            for (let i = -1; i <= 1; i += 2) { const f = new THREE.Mesh(new THREE.CylinderGeometry(.48 * s, .48 * s, .12, 16), dark); f.rotation.x = Math.PI / 2; f.position.set(x + i * .8 * s, y + .8, z - 1.03 * s); scene.add(f) }
+        }
+        function vent(x, y, z) { const c = new THREE.Mesh(new THREE.CylinderGeometry(.28, .35, 1.7, 12), metal); c.position.set(x, y + .85, z); c.castShadow = true; scene.add(c); const cap = new THREE.Mesh(new THREE.CylinderGeometry(.48, .48, .15, 12), dark); cap.position.set(x, y + 1.75, z); scene.add(cap) }
+        function tank(x, y, z) { const t = new THREE.Mesh(new THREE.CylinderGeometry(2, 2, 4, 20), metal); t.position.set(x, y + 2.7, z); t.castShadow = true; scene.add(t); box(x, y + .35, z, 5, .7, 5, dark, false); solids.push({ x, z, hx: 2.2, hz: 2.2, top: y + 4.7, bot: y }) }
+        function decorate(x, z, w, d, top) {
+            const n = 4 + Math.floor(rnd() * 4);
+            for (let k = 0; k < n; k++) {
+                // 계단/다리가 닿는 십자 축(±5m)은 비워 둠
+                const px = x + (rnd() < .5 ? -1 : 1) * (5.5 + rnd() * (w / 2 - 10)), pz = z + (rnd() < .5 ? -1 : 1) * (5.5 + rnd() * (d / 2 - 10)), r = rnd(), sw = rnd() < .5;
+                if (r < .2) hvac(px, top, pz, .7 + rnd() * .4);
+                else if (r < .36) vent(px, top, pz);
+                else if (r < .5) box(px, top + .5, pz, sw ? 1.1 : 3.4, 1, sw ? 3.4 : 1.1, red);            // 점프용 낮은 벽
+                else if (r < .66) box(px, top + 1.1, pz, sw ? 1.1 : 3.8, 2.2, sw ? 3.8 : 1.1, brick);      // Vault용 높은 벽
+                else if (r < .78) { box(px, top + .6, pz, 1.6, 1.2, 1.6, wood); box(px + .3, top + 1.6, pz, 1.1, .8, 1.1, wood) } // 박스 더미
+                else if (r < .86) { box(px, top + .55, pz, 3.5, 1.1, 4, glass, false); box(px, top + .1, pz, 3.8, .2, 4.3, dark, false) } // 천창
+                else if (r < .92) tank(px, top, pz);
+                else { box(px - 2.4, top + 2, pz, .25, 4, .25, dark, false); box(px + 2.4, top + 2, pz, .25, 4, .25, dark, false); box(px, top + 4.4, pz, 6, 2.6, .3, sign, false) } // 옥상 광고판
+            }
+            if (rnd() < .35) { const cx = x + w / 2 - 3, cz = z + d / 2 - 3, h = 8 + rnd() * 8; const a = new THREE.Mesh(new THREE.CylinderGeometry(.08, .14, h, 8), metal); a.position.set(cx, top + h / 2, cz); a.castShadow = true; scene.add(a); const l = new THREE.Mesh(new THREE.SphereGeometry(.2, 8, 8), lamp); l.position.set(cx, top + h, cz); scene.add(l) }
+            if (rnd() < .25) { const hp = new THREE.Mesh(new THREE.CylinderGeometry(4.5, 4.5, .06, 32), mat(0x3b444c)); hp.position.set(x - w / 4, top + .03, z - d / 4); hp.receiveShadow = true; scene.add(hp) }
+        }
+
+        // ---- 도시 생성: N x N 플레이 구역 + 바깥 고층 스카이라인 ----
+        const N = 7, PITCH = 46, half = (N - 1) / 2, SIZES = [34, 36, 38, 40];
+        const hf = (i, j) => 4 * Math.sin(i * .85 + .4) * Math.cos(j * .7 + .2) + 2 * Math.sin(i * .4 - j * .55 + 1), q = v => Math.round(v * 2) / 2, base = q(hf(half, half));
+        const blds = [], B = [];
+        for (let j = 0; j < N; j++) { B[j] = []; for (let i = 0; i < N; i++) { const b = { x: (i - half) * PITCH, z: (j - half) * PITCH, w: pick(SIZES), d: pick(SIZES), top: q(hf(i, j)) - base }; B[j][i] = b; blds.push(b); building(b.x, b.z, b.w, b.d, b.top, Math.floor(rnd() * 3)); decorate(b.x, b.z, b.w, b.d, b.top) } }
+        for (let j = -2; j < N + 2; j++) for (let i = -2; i < N + 2; i++) {
+            if (i >= 0 && i < N && j >= 0 && j < N) continue;
+            const outer = i < -1 || i > N || j < -1 || j > N; building((i - half) * PITCH, (j - half) * PITCH, pick(SIZES), pick(SIZES), outer ? 28 + rnd() * 60 : 20 + rnd() * 34, Math.floor(rnd() * 3), false);
+        }
+
+        // 인접 옥상 연결: 높이차 ≤0.5 → 틈(점프) 또는 판자 다리 / 높이차 큼 → 철제 계단
+        function connect(a, b, X) {
+            const ea = X ? a.x + a.w / 2 : a.z + a.d / 2, eb = X ? b.x - b.w / 2 : b.z - b.d / 2, g = eb - ea, dh = Math.abs(a.top - b.top), lo = Math.min(a.top, b.top), hi = Math.max(a.top, b.top), W = 3.6;
+            if (dh <= .5) { if (rnd() < .35) { const m = ea + g / 2, y = lo + .03 - .15; X ? box(m, y, a.z, g, .3, 2.6, wood) : box(a.x, y, m, 2.6, .3, g, wood) } return }
+            const n = Math.ceil(dh / .4), tread = g / n, fromA = a.top > b.top;
+            for (let k = 0; k < n; k++) {
+                const t = hi - (k + 1) * dh / (n + 1), p = fromA ? ea + (k + .5) * tread : eb - (k + .5) * tread, bot = lo - 2, cy = (t + bot) / 2, sy = t - bot;
+                X ? box(p, cy, a.z, tread, sy, W, metal) : box(a.x, cy, p, W, sy, tread, metal);
+            }
+        }
+        for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { if (i < N - 1) connect(B[j][i], B[j][i + 1], true); if (j < N - 1) connect(B[j][i], B[j + 1][i], false) }
+
+        // 저 아래 거리
+        const ground = new THREE.Mesh(new THREE.PlaneGeometry(3000, 3000), mat(0x2d353b)); ground.rotation.x = -Math.PI / 2; ground.position.y = GROUND; ground.receiveShadow = true; scene.add(ground);
+
+        // ---- 미니맵 ----
+        const mm = document.getElementById('mm'), mg = mm.getContext('2d'), MS = 84 / (N * PITCH / 2 + 24), bgc = document.createElement('canvas'); bgc.width = bgc.height = 168;
+        { const g = bgc.getContext('2d'); g.fillStyle = '#10202bcc'; g.fillRect(0, 0, 168, 168); for (const b of blds) { g.fillStyle = `hsl(${200 - b.top * 4} 25% ${38 + b.top * 2.2}%)`; g.fillRect(84 + (b.x - b.w / 2) * MS, 84 + (b.z - b.d / 2) * MS, b.w * MS, b.d * MS) } }
+        function drawMap() {
+            mg.drawImage(bgc, 0, 0); const ang = Math.atan2(-Math.cos(player.yaw), -Math.sin(player.yaw));
+            mg.save(); mg.translate(84 + player.pos.x * MS, 84 + player.pos.z * MS); mg.rotate(ang); mg.fillStyle = '#ff755c'; mg.beginPath(); mg.moveTo(7, 0); mg.lineTo(-5, 4.5); mg.lineTo(-5, -4.5); mg.closePath(); mg.fill(); mg.restore();
+        }
+
+        // ---- 플레이어 ----
+        const EYE = 1.68, STEP = .55, SPAWN = new THREE.Vector3(0, EYE, 10);
+        const player = { pos: SPAWN.clone(), vel: new THREE.Vector3(), yaw: 0, pitch: 0, grounded: false, slide: 0, crouch: false, vault: 0, vaultStart: null };
+        const lastSafe = SPAWN.clone();
+        camera.position.copy(player.pos);
+        const keys = {}; let locked = false, started = false, travel = 0;
+        const start = document.getElementById('start');
+        start.addEventListener('click', () => {
+            started = true; start.style.display = 'none'; window.focus();
+            try { renderer.domElement.requestPointerLock?.(); } catch (err) { console.warn('Pointer lock unavailable:', err); }
+        });
+        document.addEventListener('pointerlockchange', () => { locked = document.pointerLockElement === renderer.domElement; if (locked) start.style.display = 'none' });
+        renderer.domElement.addEventListener('click', () => { if (started && !locked) { try { renderer.domElement.requestPointerLock?.() } catch (err) { } } });
+        document.addEventListener('mousemove', e => {
+            if (!locked && !(started && (e.buttons & 1))) return; // 포인터 잠금이 막힌 환경에서는 드래그로 시점 이동
+            player.yaw -= e.movementX * .0022; player.pitch -= e.movementY * .0022; player.pitch = Math.max(-1.35, Math.min(1.35, player.pitch));
+        });
+        // 키 입력: e.code(물리 키 위치) 기준이라 한글 IME/대문자 상태에서도 W,A,S,D 가 동작
+        window.addEventListener('keydown', e => {
+            if (e.ctrlKey || e.metaKey || e.altKey) return;
+            keys[e.code] = true;
+            if (e.code === 'KeyR' && started) respawn();
+            if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
+        });
+        window.addEventListener('keyup', e => { keys[e.code] = false });
+        window.addEventListener('blur', () => { for (const k in keys) keys[k] = false });
+        const K = (...c) => c.some(k => keys[k]);
+        function respawn() { player.pos.copy(lastSafe); player.vel.set(0, 0, 0); player.vault = 0; player.vaultStart = null; player.slide = 0 }
+
+        const clock = new THREE.Clock();
+        function hit(nx, nz, feet, rad = .42) {
+            for (const s of solids) {
+                if (Math.abs(nx - s.x) > s.hx + rad || Math.abs(nz - s.z) > s.hz + rad) continue;
+                if (s.top - feet <= STEP || feet + 1.65 < s.bot) continue; // 발밑 0.55m 이하의 턱은 자동으로 오름
+                const cx = Math.max(s.x - s.hx, Math.min(nx, s.x + s.hx)), cz = Math.max(s.z - s.hz, Math.min(nz, s.z + s.hz));
+                if ((nx - cx) ** 2 + (nz - cz) ** 2 < rad * rad) return s;
+            }
+            return null;
+        }
+        function floorAt(x, z, feet, tol) {
+            let best = null;
+            for (const s of solids) { const m = s.hx > 1 && s.hz > 1 ? .25 : 0; if (Math.abs(x - s.x) < s.hx - m && Math.abs(z - s.z) < s.hz - m && s.top <= feet + tol && (!best || s.top > best.top)) best = s }
+            return best;
+        }
+        // Vault(얇은 벽 넘기) / Mantle(건물·구조물 위로 올라타기)
+        function tryVault() {
+            const feet = player.pos.y - EYE, dx = -Math.sin(player.yaw), dz = -Math.cos(player.yaw); let best = null;
+            for (const s of solids) {
+                const h = s.top - feet; if (h < 1.3 || h > 3.2 || feet + 1.65 < s.bot) continue;
+                let tin = null, tout = null;
+                for (let t = .3; t <= 4.4; t += .15) {
+                    const px = player.pos.x + dx * t, pz = player.pos.z + dz * t, inside = Math.abs(px - s.x) < s.hx + .3 && Math.abs(pz - s.z) < s.hz + .3;
+                    if (inside && tin === null) tin = t; if (!inside && tin !== null) { tout = t; break }
+                }
+                if (tin === null || tin > 1.3) continue; if (!best || tin < best.tin) best = { s, tin, tout };
+            }
+            if (!best) return false;
+            const thin = best.tout !== null && best.tout - best.tin < 3.4, t = thin ? best.tout + .8 : best.tin + 1.1, y = thin ? best.s.top + .95 : best.s.top + EYE + .02;
+            player.vault = .62; player.vaultStart = { x: player.pos.x, z: player.pos.z, tx: player.pos.x + dx * t, tz: player.pos.z + dz * t, y }; player.vel.set(0, 0, 0); return true;
+        }
+
+        function update(dt) {
+            const forward = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw)), right = new THREE.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
+            const ix = (K('KeyD', 'ArrowRight') ? 1 : 0) - (K('KeyA', 'ArrowLeft') ? 1 : 0), iz = (K('KeyS', 'ArrowDown') ? 1 : 0) - (K('KeyW', 'ArrowUp') ? 1 : 0);
+            const moving = ix !== 0 || iz !== 0, sprint = keys.ShiftLeft || keys.ShiftRight;
+            if (keys.KeyC && sprint && moving && player.slide <= 0 && player.grounded) player.slide = .5; // 슬라이딩 지속시간 0.5초
+            if (!player.grounded) player.slide = 0; // 공중에서는 슬라이딩 금지
+            const sliding = player.slide > 0; player.slide = Math.max(0, player.slide - dt);
+            player.crouch = keys.KeyC && !sliding && player.grounded; // 공중에서는 앉기 금지
+            let speed = sliding ? 22 : (sprint ? 20 : (moving ? 13 : 0)); if (player.crouch) speed = 5;
+            const move = new THREE.Vector3(); if (moving) move.copy(right).multiplyScalar(ix).addScaledVector(forward, -iz).normalize();
+            if (player.vault > 0 && player.vaultStart) {
+                player.vault = Math.max(0, player.vault - dt); const t = 1 - player.vault / .62, v = player.vaultStart;
+                player.pos.x = THREE.MathUtils.lerp(v.x, v.tx, t); player.pos.z = THREE.MathUtils.lerp(v.z, v.tz, t); player.pos.y = THREE.MathUtils.lerp(player.pos.y, v.y, Math.min(1, t * 1.7));
+                if (player.vault === 0) { player.pos.y = v.y; player.vel.y = -1; player.vaultStart = null }
+            } else {
+                const target = move.multiplyScalar(speed), accel = sliding ? 2.5 : 14;
+                player.vel.x = THREE.MathUtils.damp(player.vel.x, target.x, accel, dt); player.vel.z = THREE.MathUtils.damp(player.vel.z, target.z, accel, dt);
+                if (keys.Space && player.grounded) { if (!tryVault()) { player.vel.y = 8.2; player.grounded = false } }
+                if (!player.vaultStart) {
+                    player.vel.y -= 22 * dt;
+                    const feet = player.pos.y - EYE, wasG = player.grounded;
+                    // 축별로 나눠 충돌 처리 → 벽에 닿아도 벽을 따라 미끄러짐
+                    const nx = player.pos.x + player.vel.x * dt, nz = player.pos.z + player.vel.z * dt;
+                    if (!hit(nx, player.pos.z, feet)) player.pos.x = nx; else player.vel.x = 0;
+                    if (!hit(player.pos.x, nz, feet)) player.pos.z = nz; else player.vel.z = 0;
+                    let ny = player.pos.y + player.vel.y * dt;
+                    const fl = floorAt(player.pos.x, player.pos.z, feet, player.vel.y > 0 ? .08 : STEP);
+                    if (fl && (ny - EYE <= fl.top || (wasG && player.vel.y <= 0 && feet - fl.top <= STEP))) {
+                        ny = fl.top + EYE; player.vel.y = 0; player.grounded = true;
+                        if (fl.roof && Math.abs(player.pos.x - fl.x) < fl.hx - 3 && Math.abs(player.pos.z - fl.z) < fl.hz - 3) lastSafe.set(player.pos.x, ny, player.pos.z);
+                    } else player.grounded = false;
+                    player.pos.y = ny;
+                }
+            }
+            if (player.pos.y - EYE < -32) respawn(); // 거리로 추락하면 마지막 안전 지점으로
+            travel = Math.max(travel, Math.round(Math.hypot(player.pos.x - SPAWN.x, player.pos.z - SPAWN.z)));
+            camera.position.copy(player.pos); camera.position.y -= player.crouch || sliding ? .55 : 0; camera.rotation.order = 'YXZ'; camera.rotation.y = player.yaw; camera.rotation.x = player.pitch;
+            // 그림자/지면이 플레이어를 따라다님
+            sun.target.position.set(Math.round(player.pos.x / 4) * 4, player.pos.y, Math.round(player.pos.z / 4) * 4); sun.position.copy(sun.target.position).add(SUN_OFF); ground.position.x = player.pos.x; ground.position.z = player.pos.z;
+            document.getElementById('speed').textContent = Math.hypot(player.vel.x, player.vel.z).toFixed(1);
+            document.getElementById('mode').textContent = player.vault > 0 ? 'VAULT' : sliding ? 'SLIDE' : player.crouch ? 'CROUCH' : !moving ? 'IDLE' : sprint ? 'RUN' : 'WALK';
+            document.getElementById('alt').textContent = Math.round(player.pos.y - EYE);
+            document.getElementById('dist').textContent = travel;
+            drawMap();
+        }
+        function loop() { requestAnimationFrame(loop); const dt = Math.min(clock.getDelta(), .033); if (started) update(dt); renderer.render(scene, camera) } loop();
+        addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight) });
+    </script>
+</body>
+
+</html>
